@@ -333,7 +333,7 @@ def walker_reward(physics, task, previous_state=None, gait_state=None):
         leg_activity_ratio,
         bounds=(WALKER_MIN_LEG_ACTIVITY_RATIO, float("inf")),
         margin=WALKER_LEG_ACTIVITY_RATIO_MARGIN,
-        value_at_margin=0.3,
+        value_at_margin=0.25,
         sigmoid="linear",
     )
     foot_separation_reward = tolerance(
@@ -351,15 +351,33 @@ def walker_reward(physics, task, previous_state=None, gait_state=None):
         previous_foot_diff,
         gait_state=gait_state,
     )
+  
     alternation_factor = (
         1.0
         - WALKER_ALTERNATION_WEIGHT
         + WALKER_ALTERNATION_WEIGHT * alternation_reward
     )
-    gait_reward = leg_balance_reward * foot_separation_reward * alternation_factor
 
-    return float(posture_reward * gait_reward * (0.2 + 0.8 * move_reward))
+    # 放宽 asymmetry_penalty：允许最多 50% 差异，margin 加大
+    asymmetry_penalty = tolerance(
+        abs(right_activity - left_activity) / (right_activity + left_activity + 1e-6),
+        bounds=(0.0, 0.5),          # 从 0.3 放宽到 0.5
+        margin=0.25,                 # 从 0.2 放宽到 0.25
+        value_at_margin=0.2,
+        sigmoid="linear",
+    )
 
+    # ========== 修改 3：去掉 alternation_factor 变量，直接内联 ==========
+    # 原来：alternation_factor = 0.2 + 0.8 * alternation_reward
+    # 现在直接写进 gait_reward，保底从 0.2 降到 0.1
+    gait_reward = (
+        leg_balance_reward
+        * foot_separation_reward
+        * (0.1 + 0.9 * alternation_reward)
+        * asymmetry_penalty
+    )
+    # Require forward movement for positive reward, so standing still is not rewarded.
+    return float(posture_reward * gait_reward * move_reward)
 
 def compute_reward(env, domain, task, previous_state=None, gait_state=None):
     if domain != "walker":
@@ -374,6 +392,9 @@ def compute_reward(env, domain, task, previous_state=None, gait_state=None):
         gait_state=gait_state,
     )
 
+def check_termination(physics):
+    torso_height = physics_value(physics.named.data.xpos["torso", "z"])
+    return torso_height < 0.6   # 只检测真正摔倒
 
 def set_walker_upright_pose(physics):
     """Overrides dm_control's randomized walker reset with a clear upright pose."""
@@ -813,12 +834,13 @@ def train(args):
             previous_state=previous_reward_state,
             gait_state=gait_state,
         )
-        done = float(next_ts.last())
+        episode_over = bool(next_ts.last())
 
-        replay_buffer.add(obs, action_norm, reward, next_obs, done)
+        if args.domain == "walker" and check_termination(env.physics):
+            episode_over = True
+            reward -= 3.0       # 摔倒额外惩罚（让策略害怕摔倒）
 
-        obs = next_obs
-        ts = next_ts
+        replay_buffer.add(obs, action_norm, reward, next_obs, float(episode_over))
 
         episode_return += reward
         episode_length += 1
@@ -828,7 +850,7 @@ def train(args):
         else:
             losses = None
 
-        if ts.last():
+        if episode_over:
             episode_count += 1
             recent_returns.append(episode_return)
 
@@ -845,6 +867,9 @@ def train(args):
 
             episode_return = 0.0
             episode_length = 0
+        else:
+            obs = next_obs
+            ts = next_ts
 
         if step % args.eval_interval == 0:
             eval_return = evaluate_policy(
@@ -929,7 +954,7 @@ def parse_args():
     parser.add_argument(
         "--render_backend",
         type=str,
-        default="egl",
+        default="glfw",
         choices=["egl", "glfw", "osmesa"],
     )
 
