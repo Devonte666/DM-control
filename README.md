@@ -1,3 +1,5 @@
+<img width="400" height="300" alt="walker_step_300000" src="https://github.com/user-attachments/assets/6f12db9c-d6b0-4744-a172-bd8ef64e655a" />
+![双足机器人步态演示](https://github.com/user-attachments/assets/6f12db9c-d6b0-4744-a172-bd8ef64e655a)
 # 与原始代码的关键修改说明
 
 ---
